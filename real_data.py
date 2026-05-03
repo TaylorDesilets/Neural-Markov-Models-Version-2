@@ -30,15 +30,6 @@ state = torch.tensor(state, dtype=torch.long)
 state_val = torch.tensor(state_val, dtype=torch.long)
 
 ###########################################################
-####### Multi-sigmoid #####################################
-###########################################################
-
-def multi_sigmoid(x):
-    exp_x = torch.exp(x)
-    denom = 1 + torch.sum(exp_x, dim=1, keepdim=True)
-    return exp_x / denom
-
-###########################################################
 ####### Models ############################################
 ###########################################################
 
@@ -74,141 +65,151 @@ class NNModel(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-###########################################################
-####### Loss ##############################################
-###########################################################
+def run_real_data():
+    ###########################################################
+    ####### Multi-sigmoid #####################################
+    ###########################################################
 
-def loss_fn(model, X, T, state):
-    preds = model(X)
-    lam = multi_sigmoid(preds)
+    def multi_sigmoid(x):
+        exp_x = torch.exp(x)
+        denom = 1 + torch.sum(exp_x, dim=1, keepdim=True)
+        return exp_x / denom
 
-    survival = 1 - torch.sum(lam, dim=1) + 1e-5
-    lam = torch.clamp(lam, min=1e-10)
+    ###########################################################
+    ####### Loss ##############################################
+    ###########################################################
 
-    loss = 0.0
+    def loss_fn(model, X, T, state):
+        preds = model(X)
+        lam = multi_sigmoid(preds)
 
-    for i in range(len(T)):
-        if state[i] == 0:
-            loss += T[i] * torch.log(survival[i])
-        else:
-            loss += torch.log(lam[i, state[i]-1]) + T[i] * torch.log(survival[i])
+        survival = 1 - torch.sum(lam, dim=1) + 1e-5
+        lam = torch.clamp(lam, min=1e-10)
 
-    return -loss
+        loss = 0.0
 
-###########################################################
-####### Training ##########################################
-###########################################################
+        for i in range(len(T)):
+            if state[i] == 0:
+                loss += T[i] * torch.log(survival[i])
+            else:
+                loss += torch.log(lam[i, state[i]-1]) + T[i] * torch.log(survival[i])
 
-def train_model(model, X, T, state, epochs, lr):
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    loss_hist = []
+        return -loss
 
-    for epoch in range(epochs):
-        optimizer.zero_grad()
+    ###########################################################
+    ####### Training ##########################################
+    ###########################################################
 
-        loss = loss_fn(model, X, T, state)
-        loss.backward()
-        optimizer.step()
+    def train_model(model, X, T, state, epochs, lr):
+        optimizer = optim.Adam(model.parameters(), lr=lr)
+        loss_hist = []
 
-        loss_hist.append(loss.item())
+        for epoch in range(epochs):
+            optimizer.zero_grad()
 
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch}, Loss: {loss.item()}")
+            loss = loss_fn(model, X, T, state)
+            loss.backward()
+            optimizer.step()
 
-    return model, loss_hist
+            loss_hist.append(loss.item())
 
-###########################################################
-####### Train models ######################################
-###########################################################
+            if epoch % 10 == 0:
+                print(f"Epoch {epoch}, Loss: {loss.item()}")
 
-const_model = ConstantModel()
-lin_model = LinearModel()
-nn_model = NNModel()
+        return model, loss_hist
 
-# training
-const_model, _ = train_model(const_model, X, TIME, state, 200, 0.01)
-lin_model, _ = train_model(lin_model, X, TIME, state, 200, 0.01)
-nn_model, _ = train_model(nn_model, X, TIME, state, 400, 0.001)
+    ###########################################################
+    ####### Train models ######################################
+    ###########################################################
 
-###########################################################
-####### Validation Loss ###################################
-###########################################################
+    const_model = ConstantModel()
+    lin_model = LinearModel()
+    nn_model = NNModel()
 
-const_loss_val = loss_fn(const_model, X_val, TIME_val, state_val)
-lin_loss_val = loss_fn(lin_model, X_val, TIME_val, state_val)
-nn_loss_val = loss_fn(nn_model, X_val, TIME_val, state_val)
+    # training
+    const_model, _ = train_model(const_model, X, TIME, state, 200, 0.01)
+    lin_model, _ = train_model(lin_model, X, TIME, state, 200, 0.01)
+    nn_model, _ = train_model(nn_model, X, TIME, state, 400, 0.001)
 
-###########################################################
-####### Prediction ########################################
-###########################################################
+    ###########################################################
+    ####### Validation Loss ###################################
+    ###########################################################
 
-def predict(model, X):
-    preds = model(X)
-    lam = multi_sigmoid(preds)
-    lam0 = 1 - torch.sum(lam, dim=1, keepdim=True)
-    return torch.cat([lam0, lam], dim=1).detach().numpy()
+    const_loss_val = loss_fn(const_model, X_val, TIME_val, state_val)
+    lin_loss_val = loss_fn(lin_model, X_val, TIME_val, state_val)
+    nn_loss_val = loss_fn(nn_model, X_val, TIME_val, state_val)
 
-const_pred = predict(const_model, X_val)
-lin_pred = predict(lin_model, X_val)
-nn_pred = predict(nn_model, X_val)
+    ###########################################################
+    ####### Prediction ########################################
+    ###########################################################
 
-###########################################################
-####### State Occupation ##################################
-###########################################################
+    def predict(model, X):
+        preds = model(X)
+        lam = multi_sigmoid(preds)
+        lam0 = 1 - torch.sum(lam, dim=1, keepdim=True)
+        return torch.cat([lam0, lam], dim=1).detach().numpy()
 
-def state_occupation_matrix(df, t_eval):
-    df_filt = df[~((df["time"] < t_eval) & (df["state"] == 0))]
+    const_pred = predict(const_model, X_val)
+    lin_pred = predict(lin_model, X_val)
+    nn_pred = predict(nn_model, X_val)
 
-    TIME = df_filt["time"].round().astype(int).values
-    state = df_filt["state"].values
+    ###########################################################
+    ####### State Occupation ##################################
+    ###########################################################
 
-    mat = np.zeros((len(TIME), 7))
+    def state_occupation_matrix(df, t_eval):
+        df_filt = df[~((df["time"] < t_eval) & (df["state"] == 0))]
 
-    for i in range(len(TIME)):
-        if TIME[i] > t_eval:
-            mat[i, 0] = 1
-        else:
-            mat[i, state[i]] = 1
+        TIME = df_filt["time"].round().astype(int).values
+        state = df_filt["state"].values
 
-    return mat, df_filt["id"].values
+        mat = np.zeros((len(TIME), 7))
 
-###########################################################
-####### Brier Score #######################################
-###########################################################
+        for i in range(len(TIME)):
+            if TIME[i] > t_eval:
+                mat[i, 0] = 1
+            else:
+                mat[i, state[i]] = 1
 
-def brier_score_real_world(pred, obs, t_eval):
-    N = pred.shape[0]
-    BS = np.zeros(N)
+        return mat, df_filt["id"].values
 
-    pi0 = np.zeros(7)
-    pi0[0] = 1
+    ###########################################################
+    ####### Brier Score #######################################
+    ###########################################################
 
-    for i in range(N):
-        P = np.zeros((7,7))
-        P[0] = pred[i]
-        np.fill_diagonal(P[1:], 1)
+    def brier_score_real_world(pred, obs, t_eval):
+        N = pred.shape[0]
+        BS = np.zeros(N)
 
-        P_t = np.linalg.matrix_power(P, t_eval)
-        pred_state = pi0 @ P_t
+        pi0 = np.zeros(7)
+        pi0[0] = 1
 
-        BS[i] = np.sum((pred_state - obs[i])**2)
+        for i in range(N):
+            P = np.zeros((7,7))
+            P[0] = pred[i]
+            np.fill_diagonal(P[1:], 1)
 
-    return BS
+            P_t = np.linalg.matrix_power(P, t_eval)
+            pred_state = pi0 @ P_t
 
-###########################################################
-####### Evaluate ##########################################
-###########################################################
+            BS[i] = np.sum((pred_state - obs[i])**2)
 
-obs_mat, ids = state_occupation_matrix(df_val, 60)
+        return BS
 
-mask = df_val["id"].isin(ids)
+    ###########################################################
+    ####### Evaluate ##########################################
+    ###########################################################
 
-const_pred = const_pred[mask]
-lin_pred = lin_pred[mask]
-nn_pred = nn_pred[mask]
+    obs_mat, ids = state_occupation_matrix(df_val, 60)
 
-BS_const = brier_score_real_world(const_pred, obs_mat, 60)
-BS_lin = brier_score_real_world(lin_pred, obs_mat, 60)
-BS_nn = brier_score_real_world(nn_pred, obs_mat, 60)
+    mask = df_val["id"].isin(ids)
 
-print("Mean difference (lin - NN):", np.mean(BS_lin - BS_nn))
+    const_pred = const_pred[mask]
+    lin_pred = lin_pred[mask]
+    nn_pred = nn_pred[mask]
+
+    BS_const = brier_score_real_world(const_pred, obs_mat, 60)
+    BS_lin = brier_score_real_world(lin_pred, obs_mat, 60)
+    BS_nn = brier_score_real_world(nn_pred, obs_mat, 60)
+
+    print("Mean difference (lin - NN):", np.mean(BS_lin - BS_nn))
